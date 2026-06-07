@@ -7,6 +7,7 @@ from sglang.srt.batch_overlap import operations
 from sglang.srt.batch_overlap.operations import Operation
 from sglang.srt.layers.moe.token_dispatcher import DeepEPConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.server_args import get_global_server_args
 from sglang.srt.utils import is_hip
 
 _is_hip = is_hip()
@@ -72,6 +73,18 @@ def _assert_all_same(items: List):
     return items[0]
 
 
+def _compute_tbo_deep_gemm_num_sms() -> Optional[int]:
+    if _is_hip:
+        return None
+
+    total_num_sms = torch.cuda.get_device_properties(device="cuda").multi_processor_count
+    comm_sms = get_global_server_args().tbo_comm_sms
+    if comm_sms is None:
+        comm_sms = DeepEPConfig.get_instance().num_sms
+    comm_sms = min(comm_sms, total_num_sms - 1)
+    return max(1, total_num_sms - comm_sms)
+
+
 # -------------------------------- Strategy for DeepSeek ---------------------------------------
 
 
@@ -92,14 +105,8 @@ def _compute_moe_deepseek_layer_operations_strategy_tbo(
 
 
 def _compute_moe_deepseek_blog_prefill(layer):
-    device_properties = torch.cuda.get_device_properties(device="cuda")
-    total_num_sms = device_properties.multi_processor_count
-    deep_gemm_num_sms = None
-    if not _is_hip:
-        deep_gemm_num_sms = total_num_sms - DeepEPConfig.get_instance().num_sms
-
     return OperationsStrategy(
-        deep_gemm_num_sms=deep_gemm_num_sms,
+        deep_gemm_num_sms=_compute_tbo_deep_gemm_num_sms(),
         tbo_delta_stages=0,
         operations=[
             layer.op_comm_prepare_attn,
@@ -171,14 +178,8 @@ def _compute_moe_qwen3_layer_operations_strategy_tbo(
 
 
 def _compute_moe_qwen3_prefill(layer):
-    device_properties = torch.cuda.get_device_properties(device="cuda")
-    total_num_sms = device_properties.multi_processor_count
-    deep_gemm_num_sms = None
-    if not _is_hip:
-        deep_gemm_num_sms = total_num_sms - DeepEPConfig.get_instance().num_sms
-
     return OperationsStrategy(
-        deep_gemm_num_sms=deep_gemm_num_sms,
+        deep_gemm_num_sms=_compute_tbo_deep_gemm_num_sms(),
         tbo_delta_stages=0,
         operations=[
             layer.op_comm_prepare_attn,
@@ -248,12 +249,8 @@ def _compute_moe_mimov2_layer_operations_strategy_tbo(
 
 
 def _compute_moe_mimov2_prefill(layer):
-    device_properties = torch.cuda.get_device_properties(device="cuda")
-    total_num_sms = device_properties.multi_processor_count
-    deep_gemm_num_sms = total_num_sms - DeepEPConfig.get_instance().num_sms
-
     return OperationsStrategy(
-        deep_gemm_num_sms=deep_gemm_num_sms,
+        deep_gemm_num_sms=_compute_tbo_deep_gemm_num_sms(),
         tbo_delta_stages=0,
         operations=[
             layer.op_comm_prepare_attn,

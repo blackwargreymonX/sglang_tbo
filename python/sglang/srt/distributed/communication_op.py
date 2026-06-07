@@ -7,6 +7,9 @@ from typing import Any, Dict, Optional, Tuple, Union
 import torch
 import torch.distributed
 
+from sglang.srt.server_args import get_global_server_args
+from sglang.srt.utils.custom_op import register_custom_op
+
 from .parallel_state import (
     get_attn_tp_group,
     get_moe_ep_group,
@@ -15,9 +18,34 @@ from .parallel_state import (
 )
 
 
+def _tensor_model_parallel_all_reduce_impl(input_: torch.Tensor) -> torch.Tensor:
+    return get_tp_group().all_reduce(input_)
+
+
+@register_custom_op(
+    op_name="tbo_tensor_model_parallel_all_reduce",
+    fake_impl=lambda input_: torch.empty_like(input_),
+)
+def _tbo_tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
+    return _tensor_model_parallel_all_reduce_impl(input_)
+
+
+def _use_tbo_all_reduce_custom_op() -> bool:
+    try:
+        server_args = get_global_server_args()
+    except ValueError:
+        return False
+    return (
+        server_args.enable_two_batch_overlap
+        and server_args.tbo_all_reduce_as_custom_op
+    )
+
+
 def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
     """All-reduce the input tensor across model parallel group."""
-    return get_tp_group().all_reduce(input_)
+    if _use_tbo_all_reduce_custom_op():
+        return _tbo_tensor_model_parallel_all_reduce(input_)
+    return _tensor_model_parallel_all_reduce_impl(input_)
 
 
 def tensor_model_parallel_quant_all_reduce(input_: torch.Tensor) -> torch.Tensor:

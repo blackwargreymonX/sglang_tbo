@@ -761,6 +761,11 @@ class ServerArgs:
     enable_two_batch_overlap: bool = False
     enable_single_batch_overlap: bool = False
     tbo_token_distribution_threshold: float = 0.48
+    tbo_prefill_min_reqs: int = 2
+    tbo_prefill_min_prompt_len: int = 2048
+    tbo_spin_iters: int = 0
+    tbo_all_reduce_as_custom_op: bool = False
+    tbo_comm_sms: Optional[int] = None
     enable_torch_compile: bool = False
     disable_piecewise_cuda_graph: bool = False
     enforce_piecewise_cuda_graph: bool = False
@@ -6605,6 +6610,35 @@ class ServerArgs:
             help="The threshold of token distribution between two batches in micro-batch-overlap, determines whether to two-batch-overlap or two-chunk-overlap. Set to 0 denote disable two-chunk-overlap.",
         )
         parser.add_argument(
+            "--tbo-prefill-min-reqs",
+            type=int,
+            default=ServerArgs.tbo_prefill_min_reqs,
+            help="Minimum number of requests required to use two-batch overlap for prefill/extend batches. Set to 0 to disable this gate.",
+        )
+        parser.add_argument(
+            "--tbo-prefill-min-prompt-len",
+            type=int,
+            default=ServerArgs.tbo_prefill_min_prompt_len,
+            help="Minimum per-request extend token count required to use two-batch overlap for prefill/extend batches. Set to 0 to disable this gate.",
+        )
+        parser.add_argument(
+            "--tbo-spin-iters",
+            type=int,
+            default=ServerArgs.tbo_spin_iters,
+            help="Number of busy-spin iterations before blocking during TBO handoff. Set to 0 to disable spinning.",
+        )
+        parser.add_argument(
+            "--tbo-all-reduce-as-custom-op",
+            action="store_true",
+            help="Wrap tensor-parallel all-reduce as a custom op while TBO is active to keep runtime TBO checks opaque to torch.compile.",
+        )
+        parser.add_argument(
+            "--tbo-comm-sms",
+            type=int,
+            default=ServerArgs.tbo_comm_sms,
+            help="Number of SMs/CUs to reserve for TBO communication kernels when supported. Defaults to backend/platform selection.",
+        )
+        parser.add_argument(
             "--enable-torch-compile",
             action="store_true",
             help="Optimize the model with torch.compile. Experimental feature.",
@@ -7487,6 +7521,15 @@ class ServerArgs:
             )
 
         # Check two batch overlap
+        if self.tbo_prefill_min_reqs < 0:
+            raise ValueError("--tbo-prefill-min-reqs must be non-negative.")
+        if self.tbo_prefill_min_prompt_len < 0:
+            raise ValueError("--tbo-prefill-min-prompt-len must be non-negative.")
+        if self.tbo_spin_iters < 0:
+            raise ValueError("--tbo-spin-iters must be non-negative.")
+        if self.tbo_comm_sms is not None and self.tbo_comm_sms < 0:
+            raise ValueError("--tbo-comm-sms must be non-negative.")
+
         if self.enable_two_batch_overlap and self.moe_a2a_backend == "none":
             raise ValueError(
                 "When enabling two batch overlap, moe_a2a_backend cannot be 'none'."

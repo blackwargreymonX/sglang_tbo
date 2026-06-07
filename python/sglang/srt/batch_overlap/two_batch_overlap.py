@@ -74,7 +74,6 @@ def get_token_num_per_seq(
         return None
 
 
-# TODO: may smartly disable TBO when batch size is too small b/c it will slow down
 def compute_split_seq_index(
     forward_mode: ForwardMode,
     num_tokens: int,
@@ -83,6 +82,8 @@ def compute_split_seq_index(
 ) -> Optional[int]:
     if forward_mode == ForwardMode.EXTEND or forward_mode == ForwardMode.MIXED:
         assert extend_lens is not None
+        if not _passes_prefill_tbo_gate(extend_lens):
+            return None
         return _split_extend_seqs(extend_lens)
     elif forward_mode.is_target_verify() or forward_mode.is_decode():
         assert token_num_per_seq is not None
@@ -92,6 +93,19 @@ def compute_split_seq_index(
         return 0
     else:
         raise NotImplementedError()
+
+
+def _passes_prefill_tbo_gate(extend_lens: Sequence[int]) -> bool:
+    server_args = get_global_server_args()
+    min_reqs = server_args.tbo_prefill_min_reqs
+    if min_reqs > 0 and len(extend_lens) < min_reqs:
+        return False
+
+    min_prompt_len = server_args.tbo_prefill_min_prompt_len
+    if min_prompt_len > 0 and max(extend_lens, default=0) < min_prompt_len:
+        return False
+
+    return True
 
 
 def _is_two_chunk_split_enabled(extend_lens: Sequence[int]) -> bool:

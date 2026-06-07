@@ -27,6 +27,7 @@ from sglang.srt.layers.moe.utils import (
     get_deepep_output_dtype,
     is_tbo_enabled,
 )
+from sglang.srt.server_args import get_global_server_args
 from sglang.srt.utils import (
     get_bool_env_var,
     is_blackwell,
@@ -294,6 +295,19 @@ class DeepEPConfig(BaseDispatcherConfig):
             self.normal_dispatch_config = None
             self.normal_combine_config = None
             self.num_sms = Buffer.num_sms
+        self._maybe_apply_tbo_comm_sms_override()
+
+    def _maybe_apply_tbo_comm_sms_override(self):
+        try:
+            tbo_comm_sms = get_global_server_args().tbo_comm_sms
+        except ValueError:
+            return
+        if tbo_comm_sms is None:
+            return
+        self.num_sms = tbo_comm_sms
+        for config in (self.normal_dispatch_config, self.normal_combine_config):
+            if config is not None and hasattr(config, "num_sms"):
+                config.num_sms = tbo_comm_sms
 
     @classmethod
     def get_instance(cls):

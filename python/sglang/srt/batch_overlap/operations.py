@@ -22,6 +22,7 @@ from sglang.srt.model_executor.forward_context import (
     forward_context,
     get_forward_context,
 )
+from sglang.srt.server_args import get_global_server_args
 
 if TYPE_CHECKING:
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -69,13 +70,24 @@ def execute_overlapped_operations(
 
     for _ in range(executor_a.num_stages - delta_stage):
         executor_a.next()
+        _maybe_spin_before_tbo_handoff()
         executor_b.next()
 
     for _ in range(delta_stage):
+        _maybe_spin_before_tbo_handoff()
         executor_b.next()
 
     assert executor_a.done and executor_b.done
     return [executor_a.output, executor_b.output]
+
+
+def _maybe_spin_before_tbo_handoff():
+    try:
+        spin_iters = get_global_server_args().tbo_spin_iters
+    except ValueError:
+        return
+    for _ in range(spin_iters):
+        pass
 
 
 def _resolve_tbo_child_contexts():
