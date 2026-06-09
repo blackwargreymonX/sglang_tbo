@@ -7,7 +7,6 @@ from typing import Any, Dict, Optional, Tuple, Union
 import torch
 import torch.distributed
 
-from sglang.srt.server_args import get_global_server_args
 from sglang.srt.utils.custom_op import register_custom_op
 
 from .parallel_state import (
@@ -31,6 +30,10 @@ def _tbo_tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
 
 
 def _use_tbo_all_reduce_custom_op() -> bool:
+    # Imported lazily to avoid a circular import: server_args is imported very
+    # early (e.g. via sglang.srt.configs) and that chain pulls in this module.
+    from sglang.srt.server_args import get_global_server_args
+
     try:
         server_args = get_global_server_args()
     except ValueError:
