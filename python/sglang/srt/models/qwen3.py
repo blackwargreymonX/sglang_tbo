@@ -10,6 +10,10 @@ from sglang.srt.distributed import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
+from sglang.srt.distributed.communication_op import (
+    tbo_all_reduce_launch,
+    tbo_all_reduce_wait,
+)
 from sglang.srt.layers.communicator import LayerCommunicator, LayerScatterModes
 from sglang.srt.layers.dp_attention import get_attention_tp_rank, get_attention_tp_size
 from sglang.srt.layers.layernorm import RMSNorm
@@ -320,6 +324,8 @@ class Qwen3DecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
+        # Comm stream for TBO: the dense MLP all-reduce is issued here.
+        self.alt_stream = alt_stream
         if (
             hasattr(config, "rope_parameters")
             and config.rope_parameters
@@ -431,6 +437,96 @@ class Qwen3DecoderLayer(nn.Module):
             hidden_states, residual, forward_batch
         )
         return hidden_states, residual
+
+    # TBO op decomposition: the MLP all-reduce is split into op_allreduce_a
+    # (launch on comm stream) / op_allreduce_b (wait) around a YieldOperation so
+    # it overlaps the other micro-batch's compute. `forward` above is unchanged.
+    def op_comm_prepare_attn(
+        self,
+        state,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        forward_batch: ForwardBatch,
+        residual: Optional[torch.Tensor],
+        tbo_subbatch_index: Optional[int] = None,
+    ):
+        state.hidden_states_after_comm_pre_attn, state.residual_after_input_ln = (
+            self.layer_communicator.prepare_attn(hidden_states, residual, forward_batch)
+        )
+        state.update(
+            dict(
+                forward_batch=forward_batch,
+                positions=positions,
+                tbo_subbatch_index=tbo_subbatch_index,
+            )
+        )
+
+    def op_attn(self, state):
+        hidden_states = state.pop("hidden_states_after_comm_pre_attn")
+        if hidden_states.shape[0] != 0:
+            hidden_states = self.self_attn(
+                positions=state.positions,
+                hidden_states=hidden_states,
+                forward_batch=state.forward_batch,
+            )
+        state.hidden_states_after_attn = hidden_states
+
+    def op_comm_prepare_mlp(self, state):
+        state.hidden_states_mlp_input, state.residual_after_comm_pre_mlp = (
+            self.layer_communicator.prepare_mlp(
+                state.pop("hidden_states_after_attn"),
+                state.pop("residual_after_input_ln"),
+                state.forward_batch,
+            )
+        )
+
+    def op_mlp(self, state):
+        # Skip down_proj's all-reduce; op_allreduce_a/b reduce the partial output.
+        hidden_states = state.pop("hidden_states_mlp_input")
+        if hidden_states.shape[0] != 0:
+            gate_up, _ = self.mlp.gate_up_proj(hidden_states)
+            hidden_states = self.mlp.act_fn(gate_up)
+            hidden_states, _ = self.mlp.down_proj(hidden_states, skip_all_reduce=True)
+        state.mlp_partial = hidden_states
+
+    def op_allreduce_a(self, state):
+        partial = state.pop("mlp_partial")
+        if partial.shape[0] != 0:
+            output, done_event = tbo_all_reduce_launch(partial, self.alt_stream)
+        else:
+            output, done_event = partial, None
+        state.mlp_allreduce_output = output
+        state.mlp_allreduce_event = done_event
+
+    def op_allreduce_b(self, state):
+        state.hidden_states_mlp_output = tbo_all_reduce_wait(
+            state.pop("mlp_allreduce_output"),
+            state.pop("mlp_allreduce_event"),
+        )
+
+    def op_comm_postprocess_layer(self, state):
+        hidden_states, residual = self.layer_communicator.postprocess_layer(
+            state.pop("hidden_states_mlp_output"),
+            state.pop("residual_after_comm_pre_mlp"),
+            state.forward_batch,
+        )
+
+        output = dict(
+            positions=state.positions,
+            hidden_states=hidden_states,
+            residual=residual,
+            forward_batch=state.forward_batch,
+            tbo_subbatch_index=state.tbo_subbatch_index,
+        )
+
+        state.clear(
+            expect_keys={
+                "positions",
+                "forward_batch",
+                "tbo_subbatch_index",
+            }
+        )
+        return output
 
 
 class Qwen3Model(Qwen2Model):

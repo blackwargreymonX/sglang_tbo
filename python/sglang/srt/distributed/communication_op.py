@@ -51,6 +51,37 @@ def tensor_model_parallel_all_reduce(input_: torch.Tensor) -> torch.Tensor:
     return _tensor_model_parallel_all_reduce_impl(input_)
 
 
+def tbo_all_reduce_launch(
+    input_: torch.Tensor,
+    comm_stream: Optional["torch.cuda.Stream"],
+) -> Tuple[torch.Tensor, Optional["torch.cuda.Event"]]:
+    """Launch a TP all-reduce on ``comm_stream`` (TBO); pair with the wait below.
+
+    Falls back to a synchronous all-reduce (``done_event=None``) when there is
+    no comm stream or TP is trivial.
+    """
+    if comm_stream is None or get_tp_group().world_size == 1:
+        return _tensor_model_parallel_all_reduce_impl(input_), None
+
+    comm_stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(comm_stream):
+        output = get_tp_group().all_reduce(input_)
+    input_.record_stream(comm_stream)  # keep input_ alive while comm uses it
+    done_event = torch.cuda.Event()
+    done_event.record(comm_stream)
+    return output, done_event
+
+
+def tbo_all_reduce_wait(
+    output: torch.Tensor,
+    done_event: Optional["torch.cuda.Event"],
+) -> torch.Tensor:
+    """Make the compute stream wait for a ``tbo_all_reduce_launch`` to finish."""
+    if done_event is not None:
+        torch.cuda.current_stream().wait_event(done_event)
+    return output
+
+
 def tensor_model_parallel_quant_all_reduce(input_: torch.Tensor) -> torch.Tensor:
     """All-reduce the input tensor across model parallel group."""
     return get_tp_group().quant_all_reduce(input_)

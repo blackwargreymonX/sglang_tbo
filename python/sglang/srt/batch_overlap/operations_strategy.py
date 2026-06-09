@@ -64,6 +64,16 @@ class OperationsStrategy:
                     for layer in layers
                 ]
             )
+        elif layer_name == "Qwen3DecoderLayer":
+            # Dense Qwen3: overlap the TP all-reduce instead of a MoE all-to-all.
+            return OperationsStrategy.concat(
+                [
+                    _compute_dense_qwen3_layer_operations_strategy_tbo(
+                        layer, forward_mode
+                    )
+                    for layer in layers
+                ]
+            )
         else:
             raise NotImplementedError
 
@@ -295,5 +305,39 @@ def _compute_moe_mimov2_decode(layer):
             layer.mlp.op_output,
             layer.op_comm_postprocess_layer,
             operations.YieldOperation(),
+        ],
+    )
+
+
+# -------------------------------- Strategy for dense Qwen3 ---------------------------------------
+
+
+def _compute_dense_qwen3_layer_operations_strategy_tbo(
+    layer: torch.nn.Module,
+    forward_mode: ForwardMode,
+) -> OperationsStrategy:
+    if forward_mode in (
+        ForwardMode.EXTEND,
+        ForwardMode.DECODE,
+        ForwardMode.TARGET_VERIFY,
+    ):
+        return _compute_dense_qwen3_layer(layer)
+    raise NotImplementedError(f"Unsupported {forward_mode=}")
+
+
+def _compute_dense_qwen3_layer(layer):
+    # MLP all-reduce overlaps the other micro-batch via op_allreduce_a/Yield/b.
+    return OperationsStrategy(
+        deep_gemm_num_sms=None,
+        tbo_delta_stages=0,
+        operations=[
+            layer.op_comm_prepare_attn,
+            layer.op_attn,
+            layer.op_comm_prepare_mlp,
+            layer.op_mlp,
+            layer.op_allreduce_a,
+            operations.YieldOperation(),
+            layer.op_allreduce_b,
+            layer.op_comm_postprocess_layer,
         ],
     )

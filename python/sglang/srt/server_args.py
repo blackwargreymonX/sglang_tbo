@@ -7530,9 +7530,15 @@ class ServerArgs:
         if self.tbo_comm_sms is not None and self.tbo_comm_sms < 0:
             raise ValueError("--tbo-comm-sms must be non-negative.")
 
-        if self.enable_two_batch_overlap and self.moe_a2a_backend == "none":
+        if (
+            self.enable_two_batch_overlap
+            and self.moe_a2a_backend == "none"
+            and self.ep_size > 1
+        ):
+            # Dense (no EP) overlaps the TP all-reduce, so it needs no DeepEP.
             raise ValueError(
-                "When enabling two batch overlap, moe_a2a_backend cannot be 'none'."
+                "When enabling two batch overlap with expert parallelism "
+                "(ep_size > 1), moe_a2a_backend cannot be 'none'."
             )
 
         if self.enable_two_batch_overlap and self.enforce_shared_experts_fusion:
