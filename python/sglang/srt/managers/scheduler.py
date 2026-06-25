@@ -739,7 +739,11 @@ class Scheduler(
             "top_k_experts",
             "moe_top_k",
         )
-        if any(hasattr(config_to_check, attr) for attr in moe_topk_attrs):
+        if (
+            any(hasattr(config_to_check, attr) for attr in moe_topk_attrs)
+            or self.server_args.enable_two_batch_overlap
+        ):
+            # TBO needs IS_TBO_ENABLED set even for dense (non-MoE) models.
             initialize_moe_config(self.server_args)
 
         # Initialize GEMM-related configuration for FP8 and FP4 backends.

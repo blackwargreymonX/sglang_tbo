@@ -392,7 +392,7 @@ def get_batch_sizes_to_capture(model_runner: ModelRunner, num_tokens_per_bs=1):
     num_max_requests = model_runner.req_to_token_pool.size
 
     mul_base = 1
-    if server_args.enable_two_batch_overlap:
+    if server_args.enable_two_batch_overlap and not server_args.tbo_prefill_only:
         mul_base *= 2
         num_tokens_per_bs = 1  # tbo not test, set num_tokens_per_bs to 1
 
@@ -462,6 +462,7 @@ class CudaGraphRunner:
         self.require_attn_tp_gather = require_attn_tp_gather(model_runner.server_args)
         self.enable_two_batch_overlap = (
             model_runner.server_args.enable_two_batch_overlap
+            and not model_runner.server_args.tbo_prefill_only
         )
         self.use_ngram_embedding = model_runner.use_ngram_embedding
         if self.use_ngram_embedding:

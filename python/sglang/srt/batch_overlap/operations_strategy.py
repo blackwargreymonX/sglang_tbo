@@ -326,18 +326,22 @@ def _compute_dense_qwen3_layer_operations_strategy_tbo(
 
 
 def _compute_dense_qwen3_layer(layer):
-    # MLP all-reduce overlaps the other micro-batch via op_allreduce_a/Yield/b.
+    # Both the post-attention and post-MLP TP all-reduces are launched on a
+    # comm stream and waited on after a YieldOperation, so each overlaps the
+    # other micro-batch's compute.
     return OperationsStrategy(
         deep_gemm_num_sms=None,
         tbo_delta_stages=0,
         operations=[
             layer.op_comm_prepare_attn,
             layer.op_attn,
-            layer.op_comm_prepare_mlp,
-            layer.op_mlp,
-            layer.op_allreduce_a,
+            layer.op_attn_allreduce_a,
             operations.YieldOperation(),
-            layer.op_allreduce_b,
+            layer.op_attn_allreduce_b,
+            layer.op_mlp,
+            layer.op_mlp_allreduce_a,
+            operations.YieldOperation(),
+            layer.op_mlp_allreduce_b,
             layer.op_comm_postprocess_layer,
         ],
     )

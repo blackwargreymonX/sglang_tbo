@@ -766,6 +766,7 @@ class ServerArgs:
     tbo_spin_iters: int = 0
     tbo_all_reduce_as_custom_op: bool = False
     tbo_comm_sms: Optional[int] = None
+    tbo_prefill_only: bool = False
     enable_torch_compile: bool = False
     disable_piecewise_cuda_graph: bool = False
     enforce_piecewise_cuda_graph: bool = False
@@ -6637,6 +6638,11 @@ class ServerArgs:
             type=int,
             default=ServerArgs.tbo_comm_sms,
             help="Number of SMs/CUs to reserve for TBO communication kernels when supported. Defaults to backend/platform selection.",
+        )
+        parser.add_argument(
+            "--tbo-prefill-only",
+            action="store_true",
+            help="Only apply two-batch overlap to prefill/extend batches; decode runs without TBO (unchanged). Useful for dense models where decode TBO adds overhead.",
         )
         parser.add_argument(
             "--enable-torch-compile",

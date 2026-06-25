@@ -66,6 +66,8 @@ class TboAttnBackend(AttentionBackend):
             cuda_graph_num_tokens=num_tokens,
             spec_info=spec_info,
         )
+        if tbo_split_seq_index is None:
+            return
         bs_left = tbo_split_seq_index
         bs_right = bs - bs_left
         for child, child_bs, seq_slice, tok_slice in (

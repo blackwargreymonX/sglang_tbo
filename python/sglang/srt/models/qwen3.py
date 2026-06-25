@@ -471,17 +471,33 @@ class Qwen3DecoderLayer(nn.Module):
             )
         state.hidden_states_after_attn = hidden_states
 
-    def op_comm_prepare_mlp(self, state):
-        state.hidden_states_mlp_input, state.residual_after_comm_pre_mlp = (
-            self.layer_communicator.prepare_mlp(
-                state.pop("hidden_states_after_attn"),
-                state.pop("residual_after_input_ln"),
-                state.forward_batch,
-            )
+    def op_attn_allreduce_a(self, state):
+        # Launch the post-attention TP all-reduce on the comm stream so it
+        # overlaps the other micro-batch's compute. The attn output is partial
+        # (o_proj has reduce_results=False). Plain-TP path: this replaces the
+        # synchronous all-reduce inside LayerCommunicator.prepare_mlp.
+        partial = state.pop("hidden_states_after_attn")
+        if partial.shape[0] != 0:
+            output, done_event = tbo_all_reduce_launch(partial, self.alt_stream)
+        else:
+            output, done_event = partial, None
+        state.attn_allreduce_output = output
+        state.attn_allreduce_event = done_event
+
+    def op_attn_allreduce_b(self, state):
+        hidden_states = tbo_all_reduce_wait(
+            state.pop("attn_allreduce_output"), state.pop("attn_allreduce_event")
         )
+        residual = state.pop("residual_after_input_ln")
+        if hidden_states.shape[0] != 0:
+            hidden_states, residual = self.post_attention_layernorm(
+                hidden_states, residual
+            )
+        state.hidden_states_mlp_input = hidden_states
+        state.residual_after_comm_pre_mlp = residual
 
     def op_mlp(self, state):
-        # Skip down_proj's all-reduce; op_allreduce_a/b reduce the partial output.
+        # Skip down_proj's all-reduce; op_mlp_allreduce_a/b reduce the partial.
         hidden_states = state.pop("hidden_states_mlp_input")
         if hidden_states.shape[0] != 0:
             gate_up, _ = self.mlp.gate_up_proj(hidden_states)
@@ -489,7 +505,7 @@ class Qwen3DecoderLayer(nn.Module):
             hidden_states, _ = self.mlp.down_proj(hidden_states, skip_all_reduce=True)
         state.mlp_partial = hidden_states
 
-    def op_allreduce_a(self, state):
+    def op_mlp_allreduce_a(self, state):
         partial = state.pop("mlp_partial")
         if partial.shape[0] != 0:
             output, done_event = tbo_all_reduce_launch(partial, self.alt_stream)
@@ -498,7 +514,7 @@ class Qwen3DecoderLayer(nn.Module):
         state.mlp_allreduce_output = output
         state.mlp_allreduce_event = done_event
 
-    def op_allreduce_b(self, state):
+    def op_mlp_allreduce_b(self, state):
         state.hidden_states_mlp_output = tbo_all_reduce_wait(
             state.pop("mlp_allreduce_output"),
             state.pop("mlp_allreduce_event"),

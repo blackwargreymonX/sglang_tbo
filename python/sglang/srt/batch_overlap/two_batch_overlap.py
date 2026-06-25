@@ -87,6 +87,8 @@ def compute_split_seq_index(
         return _split_extend_seqs(extend_lens)
     elif forward_mode.is_target_verify() or forward_mode.is_decode():
         assert token_num_per_seq is not None
+        if get_global_server_args().tbo_prefill_only:
+            return None
         return (num_tokens // token_num_per_seq) // 2
     elif forward_mode.is_idle() or forward_mode.is_prebuilt():
         assert num_tokens == 0
@@ -316,6 +318,9 @@ def compute_split_indices_for_cuda_graph_replay(
         extend_lens=None,
         token_num_per_seq=token_num_per_seq,
     )
+    if tbo_split_seq_index is None:
+        # Non-TBO graph (e.g. --tbo-prefill-only decode): no split.
+        return None, None
     tbo_split_token_index = compute_split_token_index(
         split_seq_index=tbo_split_seq_index,
         forward_mode=forward_mode_for_tbo_split,
@@ -333,7 +338,8 @@ class TboCudaGraphRunnerPlugin:
         self._tbo_children_num_token_non_padded = torch.zeros((2,), dtype=torch.int32)
 
     def capture_one_batch_size(self, batch: ForwardBatch, num_tokens: int):
-        if not is_tbo_enabled():
+        if not is_tbo_enabled() or get_global_server_args().tbo_prefill_only:
+            # prefill-only: decode CUDA graphs are captured without TBO.
             return
         token_num_per_seq = get_token_num_per_seq(
             forward_mode=batch.forward_mode, spec_info=batch.spec_info

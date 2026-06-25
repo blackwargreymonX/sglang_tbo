@@ -3158,7 +3158,13 @@ def require_gathered_buffer(server_args: ServerArgs):
 
 
 def require_mlp_sync(server_args: ServerArgs):
-    return server_args.enable_dp_attention or require_gathered_buffer(server_args)
+    # TBO needs the sync to compute tbo_split_seq_index even for pure TP
+    # (no DP attention / EP), e.g. dense-model two-batch overlap.
+    return (
+        server_args.enable_dp_attention
+        or require_gathered_buffer(server_args)
+        or server_args.enable_two_batch_overlap
+    )
 
 
 def find_local_repo_dir(repo_id: str, revision: Optional[str] = None) -> Optional[str]:
